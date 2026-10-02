@@ -24,6 +24,14 @@ EXIT = (17, 19)
 MOVES = ((-1, 0), (1, 0), (0, -1), (0, 1))
 SEED = 20
 PICKUP_COUNT = 10
+# Parameters are declared here so the experiment can be reproduced and tuned.
+# The selected settings are recorded in the accompanying report.
+TRAINING_EPISODES = 5_000
+LEARNING_RATE = 0.20
+DISCOUNT_FACTOR = 1.00
+STEP_REWARD = -1.0
+COMPLETION_REWARD = 100.0
+MAX_ROLLOUT_STEPS = 200
 
 
 def pickup_masks(pickups):
@@ -39,17 +47,34 @@ def pickup_masks(pickups):
 
 
 def optimal_demonstration(masks, full_mask):
-    """Find a shortest feasible trajectory, including all pickup interactions."""
-    start = (*ENTRANCE, masks[ENTRANCE])
-    queue = deque([start])
-    parent = {start: None}
-    goal = None
+    """Find a shortest feasible trajectory without a large Python dict frontier."""
     rows, cols = base.warehouse.shape
+    cells = rows * cols
+    state_count = (full_mask + 1) * cells
+    parent = np.full(state_count, -1, dtype=np.int32)
+    actions = np.full(state_count, -1, dtype=np.int8)
+    queue = np.empty(state_count, dtype=np.int32)
 
-    while queue:
-        row, col, mask = queue.popleft()
+    def state_id(row, col, mask):
+        return mask * cells + row * cols + col
+
+    def unpack(encoded):
+        mask, cell = divmod(int(encoded), cells)
+        return cell // cols, cell % cols, mask
+
+    start = state_id(*ENTRANCE, masks[ENTRANCE])
+    parent[start] = start
+    queue[0] = start
+    head = 0
+    tail = 1
+    goal = None
+
+    while head < tail:
+        current = queue[head]
+        head += 1
+        row, col, mask = unpack(current)
         if (row, col) == EXIT and mask == full_mask:
-            goal = row, col, mask
+            goal = current
             break
         for action, (d_row, d_col) in enumerate(MOVES):
             next_row, next_col = row + d_row, col + d_col
@@ -57,23 +82,32 @@ def optimal_demonstration(masks, full_mask):
                 continue
             if base.warehouse[next_row, next_col] != 0:
                 continue
-            next_state = (next_row, next_col, mask | masks[next_row, next_col])
-            if next_state not in parent:
-                parent[next_state] = ((row, col, mask), action)
-                queue.append(next_state)
+            next_state = state_id(
+                next_row, next_col, mask | masks[next_row, next_col]
+            )
+            if parent[next_state] == -1:
+                parent[next_state] = current
+                actions[next_state] = action
+                queue[tail] = next_state
+                tail += 1
 
     if goal is None:
         raise RuntimeError("No feasible route visits every pickup and reaches the exit.")
 
     transitions = []
-    while parent[goal] is not None:
-        previous, action = parent[goal]
-        transitions.append((previous, action, goal))
+    while goal != start:
+        previous = parent[goal]
+        transitions.append((unpack(previous), int(actions[goal]), unpack(goal)))
         goal = previous
     return list(reversed(transitions))
 
 
-def train_from_demonstration(transitions, epochs=5_000, alpha=0.20, gamma=1.0):
+def train_from_demonstration(
+    transitions,
+    epochs=TRAINING_EPISODES,
+    alpha=LEARNING_RATE,
+    gamma=DISCOUNT_FACTOR,
+):
     """Q-learning replay over the demonstrated transitions.
 
     Each ordinary movement receives -1 reward; reaching the fully-complete exit
@@ -88,14 +122,14 @@ def train_from_demonstration(transitions, epochs=5_000, alpha=0.20, gamma=1.0):
     for _ in range(epochs):
         for state, action, next_state in transitions:
             finished = (next_state[:2] == EXIT and next_state[2] == FULL_MASK)
-            reward = 100.0 if finished else -1.0
+            reward = COMPLETION_REWARD if finished else STEP_REWARD
             future = 0.0 if finished else float(np.max(values(next_state)))
             current = values(state)
             current[action] += alpha * (reward + gamma * future - current[action])
     return q_values
 
 
-def greedy_rollout(q_values, masks, full_mask, max_steps=200):
+def greedy_rollout(q_values, masks, full_mask, max_steps=MAX_ROLLOUT_STEPS):
     state = (*ENTRANCE, masks[ENTRANCE])
     path = [ENTRANCE]
     visited_pickups = []
