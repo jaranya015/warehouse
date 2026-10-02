@@ -156,13 +156,26 @@ def greedy_rollout(q_values, masks, full_mask, max_steps=MAX_ROLLOUT_STEPS):
 PICKUPS = base.generate_pickup_points(base.warehouse, PICKUP_COUNT, seed=SEED)
 MASKS = pickup_masks(PICKUPS)
 FULL_MASK = (1 << PICKUP_COUNT) - 1
-DEMONSTRATION = optimal_demonstration(MASKS, FULL_MASK)
-Q_VALUES = train_from_demonstration(DEMONSTRATION)
-PATH, VISIT_ORDER = greedy_rollout(Q_VALUES, MASKS, FULL_MASK)
 
-if len(PATH) - 1 != 72:
-    raise RuntimeError(f"Target missed: expected 72 steps, got {len(PATH) - 1}.")
 
-print(f"steps={len(PATH) - 1}")
-print(f"pickup_order={VISIT_ORDER}")
-print(f"path={PATH}")
+def run(epochs=5_000, alpha=0.20, gamma=1.0):
+    """Train and return a validated greedy rollout.
+
+    Keeping execution behind this function allows other scripts to import the
+    algorithm without printing a full path as an import side effect.
+    """
+    demonstration = optimal_demonstration(MASKS, FULL_MASK)
+    q_values = train_from_demonstration(
+        demonstration, epochs=epochs, alpha=alpha, gamma=gamma
+    )
+    path, visit_order = greedy_rollout(q_values, MASKS, FULL_MASK)
+    if len(path) - 1 != 72:
+        raise RuntimeError(f"Target missed: expected 72 steps, got {len(path) - 1}.")
+    return q_values, path, visit_order
+
+
+if __name__ == "__main__":
+    Q_VALUES, PATH, VISIT_ORDER = run()
+    print(f"steps={len(PATH) - 1}")
+    print(f"pickup_order={VISIT_ORDER}")
+    print(f"path={PATH}")
